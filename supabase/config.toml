@@ -1,0 +1,4 @@
+project_id = "gta-discord-inventory"
+
+[functions.discord-sync]
+verify_jwt = false
