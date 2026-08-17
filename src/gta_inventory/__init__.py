@@ -1,0 +1,2 @@
+"""Discord webhook inventory tracker."""
+

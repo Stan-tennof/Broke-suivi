@@ -1,0 +1,26 @@
+services:
+  - type: worker
+    name: gta-inventory-discord-bot
+    env: python
+    plan: starter
+    buildCommand: pip install -r requirements.txt
+    startCommand: python -m gta_inventory.bot
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: DISCORD_BOT_TOKEN
+        sync: false
+      - key: DISCORD_CHANNEL_IDS
+        sync: false
+
+  - type: web
+    name: gta-inventory-dashboard
+    env: python
+    plan: starter
+    buildCommand: pip install -r requirements.txt
+    startCommand: streamlit run src/gta_inventory/dashboard.py --server.port $PORT --server.address 0.0.0.0
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: ADMIN_PASSWORD
+        sync: false
