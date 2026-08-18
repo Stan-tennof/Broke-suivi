@@ -22,6 +22,20 @@ export type ChestWeightSummary = {
   isComplete: boolean;
 };
 
+const MONEY_ITEM_NAMES = new Set(["argent", "argent sale"]);
+
+export function isMoneyItem(itemName: string): boolean {
+  return MONEY_ITEM_NAMES.has(itemName.trim().toLocaleLowerCase("fr"));
+}
+
+export function formatMoney(amount: number): string {
+  return new Intl.NumberFormat("fr-CA", {
+    style: "currency",
+    currency: "USD",
+    maximumFractionDigits: 0,
+  }).format(amount);
+}
+
 export function globalStock(movements: StockMovement[]): Map<string, number> {
   const stock = new Map<string, number>();
   for (const movement of movements) {
@@ -51,6 +65,7 @@ export function calculateChestWeight(
   let unknownUnitCount = 0;
 
   for (const line of lines) {
+    if (isMoneyItem(line.item_name)) continue;
     const quantity = Math.max(0, Number(line.quantity));
     if (quantity === 0) continue;
     const unitWeight = byItem.get(line.item_name);

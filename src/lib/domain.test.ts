@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { calculateChestWeight, chestStock, formatWeight, globalStock, validateAdjustment } from "./domain";
+import { calculateChestWeight, chestStock, formatMoney, formatWeight, globalStock, isMoneyItem, validateAdjustment } from "./domain";
 
 const movements = [
   { item_name: "Fer", signed_delta: 10, discord_webhook_id: "1" },
@@ -55,8 +55,31 @@ describe("chest weights", () => {
     expect(result.isComplete).toBe(false);
   });
 
+  it("excludes clean and dirty money from chest weight", () => {
+    const result = calculateChestWeight(
+      [{ item_name: "Argent", quantity: 5000 }, { item_name: "Argent Sale", quantity: 3000 }],
+      [],
+      500,
+    );
+    expect(result.knownWeightKg).toBe(0);
+    expect(result.unknownItemCount).toBe(0);
+    expect(result.remainingKg).toBe(500);
+  });
+
   it("formats grams and kilograms", () => {
     expect(formatWeight(0.25)).toBe("250 g");
     expect(formatWeight(1.5)).toBe("1,5 kg");
+  });
+});
+
+describe("money items", () => {
+  it("recognizes money labels without case sensitivity", () => {
+    expect(isMoneyItem("Argent")).toBe(true);
+    expect(isMoneyItem("ARGENT SALE")).toBe(true);
+    expect(isMoneyItem("Fertilisant")).toBe(false);
+  });
+
+  it("formats dollar amounts", () => {
+    expect(formatMoney(1234)).toMatch(/1[\s  ]?234/);
   });
 });
