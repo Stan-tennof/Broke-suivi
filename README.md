@@ -16,7 +16,7 @@ Supabase Cron (15 min) ------------> Edge Function discord-sync
 GitHub Pages (Vite) -> Supabase Auth + API publique protégée
 ```
 
-La fonction récupère l’historique complet lors du premier passage, puis utilise le dernier Snowflake Discord traité avec `after`. Les insertions passent par une fonction SQL atomique et `transactions.discord_message_id` est `UNIQUE`.
+La fonction récupère l’historique complet lors du premier passage, puis utilise le dernier Snowflake Discord traité avec `after`. Les insertions passent par une fonction SQL atomique. Une clé d’événement `UNIQUE`, composée de l’ID du message et de l’index de l’embed, permet d’enregistrer plusieurs mouvements contenus dans un même message sans doublon.
 
 ## 1. Créer Supabase
 
@@ -126,7 +126,7 @@ Les tests couvrent le parsing accentué, les messages invalides, les calculs de 
 
 ## Import historique administratif
 
-Le bouton **Relancer l’import historique** reparcourt tous les messages sans modifier les transactions existantes. La contrainte `UNIQUE` transforme les messages déjà connus en doublons ignorés. Pour remettre uniquement le curseur d’un salon à zéro :
+Le bouton **Relancer l’import historique** reparcourt tous les messages sans modifier les transactions existantes. La clé d’événement unique transforme les mouvements déjà connus en doublons ignorés. Pour remettre uniquement le curseur d’un salon à zéro :
 
 ```sql
 select public.reset_channel_history('DISCORD_CHANNEL_ID');

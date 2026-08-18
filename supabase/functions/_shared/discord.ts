@@ -3,6 +3,11 @@ export type DiscordMessage = {
   webhook_id?: string | null;
   content: string;
   timestamp: string;
+  embeds?: Array<{
+    title?: string;
+    description?: string;
+    fields?: Array<{ name: string; value: string }>;
+  }>;
 };
 
 export type FetchLike = (

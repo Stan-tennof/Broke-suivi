@@ -4,7 +4,7 @@ insert into public.discord_channels (channel_id, label)
 values ('100', 'Test channel');
 
 select public.ingest_discord_transaction(
-  '1000', '200', '100', 'Coffre 500kg', 500, 'Stan Broke',
+  '1000', '1000:1', 1, '200', '100', 'Coffre 500kg', 500, 'Stan Broke',
   'deposit', 39, 'Fertilisant premium', now(), '**raw**'
 );
 
@@ -12,12 +12,12 @@ do $$
 declare inserted_again boolean;
 begin
   select public.ingest_discord_transaction(
-    '1000', '200', '100', 'Coffre 500kg', 500, 'Stan Broke',
+    '1000', '1000:1', 1, '200', '100', 'Coffre 500kg', 500, 'Stan Broke',
     'deposit', 39, 'Fertilisant premium', now(), '**raw**'
   ) into inserted_again;
   if inserted_again then raise exception 'Duplicate transaction was inserted'; end if;
   if (select count(*) from public.transactions where discord_message_id = '1000') <> 1 then
-    raise exception 'Discord message ID is not unique';
+    raise exception 'Discord event key is not unique';
   end if;
   if (select quantity from public.inventory_global where item_name = 'Fertilisant premium') <> 39 then
     raise exception 'Global stock calculation failed';

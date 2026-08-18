@@ -1,7 +1,7 @@
-import { createClient } from "@supabase/supabase-js";
+import { createClient } from "npm:@supabase/supabase-js@2.55.0";
 import { corsHeaders } from "../_shared/cors.ts";
 import { collectDiscordMessages, newestMessageId } from "../_shared/discord.ts";
-import { parseMovement } from "../_shared/parser.ts";
+import { parseMessageMovements } from "../_shared/parser.ts";
 
 type SyncResult = {
   inspected: number;
@@ -10,6 +10,12 @@ type SyncResult = {
   ignored: number;
   errors: string[];
   synchronizedAt: string;
+  diagnosticSamples?: Array<{
+    messageId: string;
+    webhookId: string | null;
+    content: string;
+    embeds: unknown[];
+  }>;
 };
 
 function json(request: Request, body: unknown, status = 200): Response {
@@ -66,6 +72,7 @@ Deno.serve(async (request) => {
   const body = await request.json().catch(() => ({})) as {
     mode?: string;
     channelId?: string;
+    diagnostic?: boolean;
   };
   const historical = body.mode === "historical";
   const triggerType = historical ? "historical" : isCron ? "cron" : "manual";
@@ -77,6 +84,7 @@ Deno.serve(async (request) => {
     errors: [],
     synchronizedAt: new Date().toISOString(),
   };
+  if (body.diagnostic) result.diagnosticSamples = [];
 
   const { data: run, error: runError } = await db.from("sync_runs").insert({
     trigger_type: triggerType,
@@ -119,36 +127,57 @@ Deno.serve(async (request) => {
           webhookActivity.get(message.webhook_id) === false
         ) {
           result.ignored += 1;
+          if (body.diagnostic && result.diagnosticSamples!.length < 5) {
+            result.diagnosticSamples!.push({
+              messageId: message.id,
+              webhookId: message.webhook_id ?? null,
+              content: message.content,
+              embeds: message.embeds ?? [],
+            });
+          }
           continue;
         }
-        const movement = parseMovement(message.content);
-        if (!movement) {
+        const parsedMovements = parseMessageMovements(message);
+        if (parsedMovements.length === 0) {
           result.ignored += 1;
+          if (body.diagnostic && result.diagnosticSamples!.length < 5) {
+            result.diagnosticSamples!.push({
+              messageId: message.id,
+              webhookId: message.webhook_id,
+              content: message.content,
+              embeds: message.embeds ?? [],
+            });
+          }
           continue;
         }
 
-        const { data: inserted, error } = await db.rpc(
-          "ingest_discord_transaction",
-          {
-            p_message_id: message.id,
-            p_webhook_id: message.webhook_id,
-            p_channel_id: channel.channel_id,
-            p_chest_name: movement.chestName,
-            p_capacity_kg: movement.capacityKg,
-            p_player_name: movement.playerName,
-            p_action: movement.action,
-            p_quantity: movement.quantity,
-            p_item_name: movement.itemName,
-            p_discord_timestamp: message.timestamp,
-            p_raw_content: message.content,
-          },
-        );
-        if (error) throw error;
-        if (inserted) {
-          result.imported += 1;
-          webhookActivity.set(message.webhook_id, true);
-        } else {
-          result.duplicates += 1;
+        for (const parsed of parsedMovements) {
+          const movement = parsed.movement;
+          const { data: inserted, error } = await db.rpc(
+            "ingest_discord_transaction",
+            {
+              p_message_id: message.id,
+              p_event_key: `${message.id}${parsed.eventSuffix}`,
+              p_movement_index: parsed.movementIndex,
+              p_webhook_id: message.webhook_id,
+              p_channel_id: channel.channel_id,
+              p_chest_name: movement.chestName,
+              p_capacity_kg: movement.capacityKg,
+              p_player_name: movement.playerName,
+              p_action: movement.action,
+              p_quantity: movement.quantity,
+              p_item_name: movement.itemName,
+              p_discord_timestamp: message.timestamp,
+              p_raw_content: parsed.rawContent,
+            },
+          );
+          if (error) throw error;
+          if (inserted) {
+            result.imported += 1;
+            webhookActivity.set(message.webhook_id, true);
+          } else {
+            result.duplicates += 1;
+          }
         }
       }
 

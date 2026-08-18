@@ -1,4 +1,4 @@
-import { parseMovement } from "./parser.ts";
+import { parseMessageMovements, parseMovement } from "./parser.ts";
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
@@ -37,4 +37,30 @@ Deno.test("ignores invalid messages", () => {
     parseMovement("**Coffre**\n**Joueur** a déposé 0x Item") === null,
     "Zero should be ignored",
   );
+});
+
+Deno.test("parses every movement from Discord embeds", () => {
+  const parsed = parseMessageMovements({
+    content: "",
+    embeds: [
+      {
+        title: "Coffre Plantation",
+        description: "**Léo Broke** a déposé 43x Fertilisant",
+      },
+      {
+        title: "Coffre Plantation",
+        description: "**Stan Broke** a retiré 32x Bouteille d'eau",
+      },
+    ],
+  });
+  assert(parsed.length === 2, "Expected two embedded movements");
+  assert(
+    parsed[0].movement.chestName === "Coffre Plantation",
+    "Expected embed title as chest",
+  );
+  assert(
+    parsed[1].movement.itemName === "Bouteille d'eau",
+    "Expected embedded item",
+  );
+  assert(parsed[1].eventSuffix === ":2", "Expected stable embed event suffix");
 });
