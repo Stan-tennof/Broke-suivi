@@ -1,6 +1,11 @@
 export type AppRole = "viewer" | "admin";
 
 export type InventoryItem = { item_name: string; quantity: number };
+export type ItemWeight = {
+  item_name: string;
+  weight_kg: number | null;
+  updated_at: string;
+};
 export type ChestInventoryItem = {
   webhook_id: string | null;
   chest_name: string;

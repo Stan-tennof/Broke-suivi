@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { chestStock, globalStock, validateAdjustment } from "./domain";
+import { calculateChestWeight, chestStock, formatWeight, globalStock, validateAdjustment } from "./domain";
 
 const movements = [
   { item_name: "Fer", signed_delta: 10, discord_webhook_id: "1" },
@@ -23,5 +23,40 @@ describe("manual adjustments", () => {
     expect(validateAdjustment(0, "Stock initial")).not.toBeNull();
     expect(validateAdjustment(5, "")).not.toBeNull();
     expect(validateAdjustment(-5, "Correction inventaire")).toBeNull();
+  });
+});
+
+describe("chest weights", () => {
+  it("calculates known weight and exact remaining capacity", () => {
+    const result = calculateChestWeight(
+      [{ item_name: "Fer", quantity: 10 }, { item_name: "Bois", quantity: 4 }],
+      [{ item_name: "Fer", weight_kg: 0.5 }, { item_name: "Bois", weight_kg: 2 }],
+      20,
+    );
+    expect(result).toEqual({
+      knownWeightKg: 13,
+      remainingKg: 7,
+      unknownItemCount: 0,
+      unknownUnitCount: 0,
+      isComplete: true,
+    });
+  });
+
+  it("marks capacity as partial when an item weight is missing", () => {
+    const result = calculateChestWeight(
+      [{ item_name: "Fer", quantity: 10 }, { item_name: "Mystère", quantity: 3 }],
+      [{ item_name: "Fer", weight_kg: 0.5 }],
+      20,
+    );
+    expect(result.knownWeightKg).toBe(5);
+    expect(result.remainingKg).toBe(15);
+    expect(result.unknownItemCount).toBe(1);
+    expect(result.unknownUnitCount).toBe(3);
+    expect(result.isComplete).toBe(false);
+  });
+
+  it("formats grams and kilograms", () => {
+    expect(formatWeight(0.25)).toBe("250 g");
+    expect(formatWeight(1.5)).toBe("1,5 kg");
   });
 });

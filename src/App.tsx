@@ -1,17 +1,18 @@
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import type { Session } from "@supabase/supabase-js";
 import {
-  Archive, Boxes, ChevronRight, CircleAlert, History, LogOut, PackageSearch,
-  RefreshCw, Search, Settings, SlidersHorizontal, UserRound, Users,
+  Archive, Boxes, ChevronRight, CircleAlert, CircleHelp, History, LogOut,
+  PackageSearch, RefreshCw, Save, Scale, Search, Settings, SlidersHorizontal,
+  UserRound, Users,
 } from "lucide-react";
-import { actionLabel, validateAdjustment } from "./lib/domain";
+import { actionLabel, calculateChestWeight, formatWeight, validateAdjustment } from "./lib/domain";
 import { isConfigured, supabase } from "./lib/supabase";
 import type {
-  AppRole, Channel, Chest, ChestInventoryItem, InventoryItem,
+  AppRole, Channel, Chest, ChestInventoryItem, InventoryItem, ItemWeight,
   PlayerActivity, SyncRun, Transaction,
 } from "./lib/types";
 
-type Tab = "global" | "chests" | "history" | "players" | "admin";
+type Tab = "global" | "chests" | "weights" | "history" | "players" | "admin";
 type Notice = { kind: "success" | "error"; text: string } | null;
 
 const dateTime = (value?: string | null) => value
@@ -50,6 +51,7 @@ export default function App() {
   const [notice, setNotice] = useState<Notice>(null);
   const [globalItems, setGlobalItems] = useState<InventoryItem[]>([]);
   const [chestItems, setChestItems] = useState<ChestInventoryItem[]>([]);
+  const [itemWeights, setItemWeights] = useState<ItemWeight[]>([]);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [players, setPlayers] = useState<PlayerActivity[]>([]);
   const [chests, setChests] = useState<Chest[]>([]);
@@ -66,10 +68,11 @@ export default function App() {
     if (!session?.user.email) return;
     setLoading(true);
     const email = session.user.email.toLowerCase();
-    const [access, global, byChest, history, activity, chestRows, channelRows, runRows] = await Promise.all([
+    const [access, global, byChest, weights, history, activity, chestRows, channelRows, runRows] = await Promise.all([
       supabase.from("app_users").select("role, active").eq("email", email).maybeSingle(),
       supabase.from("inventory_global").select("*").order("item_name"),
       supabase.from("inventory_by_chest").select("*").order("chest_name").order("item_name"),
+      supabase.from("item_weights").select("item_name,weight_kg,updated_at").order("item_name"),
       supabase.from("transactions").select("id,discord_message_id,discord_webhook_id,discord_channel_id,chest_name,player_name,action,quantity,signed_delta,item_name,discord_timestamp,source,justification").order("discord_timestamp", { ascending: false }).limit(5000),
       supabase.from("player_activity").select("*").order("deposited", { ascending: false }),
       supabase.from("webhook_chests").select("webhook_id,canonical_name,detected_name,capacity_kg,active").order("canonical_name"),
@@ -82,10 +85,11 @@ export default function App() {
     } else {
       setRole(access.data.role as AppRole);
     }
-    const firstError = [global, byChest, history, activity, chestRows, channelRows, runRows].find((query) => query.error)?.error;
+    const firstError = [global, byChest, weights, history, activity, chestRows, channelRows, runRows].find((query) => query.error)?.error;
     if (firstError) setNotice({ kind: "error", text: firstError.message });
     setGlobalItems((global.data ?? []) as InventoryItem[]);
     setChestItems((byChest.data ?? []) as ChestInventoryItem[]);
+    setItemWeights((weights.data ?? []) as ItemWeight[]);
     setTransactions((history.data ?? []) as Transaction[]);
     setPlayers((activity.data ?? []) as PlayerActivity[]);
     setChests((chestRows.data ?? []) as Chest[]);
@@ -116,6 +120,7 @@ export default function App() {
   const nav: { id: Tab; label: string; icon: typeof Boxes }[] = [
     { id: "global", label: "Vue globale", icon: Boxes },
     { id: "chests", label: "Par coffre", icon: Archive },
+    { id: "weights", label: "Poids des items", icon: Scale },
     { id: "history", label: "Historique", icon: History },
     { id: "players", label: "Joueurs", icon: Users },
     ...(role === "admin" ? [{ id: "admin" as Tab, label: "Administration", icon: Settings }] : []),
@@ -131,7 +136,8 @@ export default function App() {
       <header><div><span className="eyebrow">Suivi Discord</span><h1>{nav.find((item) => item.id === tab)?.label}</h1></div>{role === "admin" && <button className="primary" onClick={() => runSync()} disabled={loading}><RefreshCw size={17} className={loading ? "spin" : ""} /> Actualiser maintenant</button>}</header>
       {notice && <div className={`notice ${notice.kind}`}><CircleAlert size={18} />{notice.text}</div>}
       {tab === "global" && <GlobalView items={globalItems} lastRun={lastRun} transactions={transactions} />}
-      {tab === "chests" && <ChestView items={chestItems} />}
+      {tab === "chests" && <ChestView items={chestItems} weights={itemWeights} />}
+      {tab === "weights" && <WeightsView transactions={transactions} weights={itemWeights} role={role} reload={loadData} />}
       {tab === "history" && <HistoryView transactions={transactions} chests={chests} />}
       {tab === "players" && <PlayersView players={players} transactions={transactions} />}
       {tab === "admin" && role === "admin" && <AdminView chests={chests} channels={channels} reload={loadData} runHistorical={() => runSync(true)} />}
@@ -151,7 +157,7 @@ function GlobalView({ items, lastRun, transactions }: { items: InventoryItem[]; 
   </>;
 }
 
-function ChestView({ items }: { items: ChestInventoryItem[] }) {
+function ChestView({ items, weights }: { items: ChestInventoryItem[]; weights: ItemWeight[] }) {
   const groups = useMemo(() => {
     const result = new Map<string, ChestInventoryItem[]>();
     for (const item of items) {
@@ -160,11 +166,60 @@ function ChestView({ items }: { items: ChestInventoryItem[] }) {
     }
     return result;
   }, [items]);
+  const weightByItem = useMemo(() => new Map(weights.map((weight) => [weight.item_name, weight.weight_kg])), [weights]);
   return <div className="chest-grid">{[...groups.entries()].map(([id, rows]) => {
-    const total = rows.reduce((sum, row) => sum + Number(row.quantity), 0);
-    const max = Math.max(...rows.map((row) => Number(row.quantity)), 1);
-    return <article className="chest-panel" key={id}><header><div><h2>{rows[0].chest_name}</h2><span>Webhook {id}</span></div>{rows[0].capacity_kg && <span className="capacity">{rows[0].capacity_kg} kg</span>}</header><div className="chest-summary"><strong>{total}</strong><span>unités · dernier mouvement {dateTime(rows[0].last_movement_at)}</span></div><div className="stock-list">{rows.map((row) => <div key={row.item_name}><div><span>{row.item_name}</span><strong>{row.quantity}</strong></div><div className="bar"><i style={{ width: `${Math.max(3, Number(row.quantity) / max * 100)}%` }} /></div></div>)}</div></article>;
+    const capacity = rows[0].capacity_kg == null ? null : Number(rows[0].capacity_kg);
+    const summary = calculateChestWeight(rows, weights, capacity);
+    const lastMovement = rows.map((row) => row.last_movement_at).sort().at(-1);
+    return <article className="chest-panel" key={id}>
+      <header><div><h2>{rows[0].chest_name}</h2><span>Webhook {id} · dernier mouvement {dateTime(lastMovement)}</span></div></header>
+      <div className="weight-metrics">
+        <div><span>Capacité max.</span><strong>{capacity == null ? "Non définie" : formatWeight(capacity)}</strong></div>
+        <div><span>Poids connu</span><strong>{formatWeight(summary.knownWeightKg)}</strong></div>
+        <div><span>{summary.isComplete ? "Disponible" : "Disponible au plus"}</span><strong className={summary.remainingKg != null && summary.remainingKg < 0 ? "negative" : ""}>{summary.remainingKg == null ? "Indéterminé" : formatWeight(summary.remainingKg)}</strong></div>
+      </div>
+      {!summary.isComplete && <div className="weight-warning"><CircleHelp size={16} /><span>{summary.unknownItemCount} poids à renseigner ({summary.unknownUnitCount} unités). Le poids total est partiel.</span></div>}
+      <div className="stock-list weighted">{rows.map((row) => {
+        const unitWeight = weightByItem.get(row.item_name);
+        const lineWeight = unitWeight == null ? null : Math.max(0, Number(row.quantity)) * Number(unitWeight);
+        return <div className="stock-line" key={row.item_name}>
+          <div><strong>{row.item_name}</strong><span>{unitWeight == null ? "Poids à renseigner" : `${formatWeight(Number(unitWeight))} / unité`}</span></div>
+          <div><strong className={Number(row.quantity) < 0 ? "negative" : ""}>{row.quantity} unités</strong><span>{lineWeight == null ? "Poids inconnu" : formatWeight(lineWeight)}</span></div>
+        </div>;
+      })}</div>
+    </article>;
   })}<TableEmpty visible={!items.length} /></div>;
+}
+
+function WeightsView({ transactions, weights, role, reload }: { transactions: Transaction[]; weights: ItemWeight[]; role: AppRole | null; reload: () => Promise<void> }) {
+  const [search, setSearch] = useState("");
+  const itemNames = useMemo(() => [...new Set([
+    ...transactions.map((transaction) => transaction.item_name),
+    ...weights.map((weight) => weight.item_name),
+  ])].sort((a, b) => a.localeCompare(b, "fr")), [transactions, weights]);
+  const weightByItem = new Map(weights.map((weight) => [weight.item_name, weight]));
+  const shown = itemNames.filter((item) => item.toLocaleLowerCase("fr").includes(search.toLocaleLowerCase("fr")));
+  const pending = itemNames.filter((item) => weightByItem.get(item)?.weight_kg == null).length;
+  return <>
+    <section className="weight-catalog-summary"><div><strong>{itemNames.length}</strong><span>items connus</span></div><div><strong>{itemNames.length - pending}</strong><span>poids renseignés</span></div><div><strong>{pending}</strong><span>en attente</span></div></section>
+    <section className="toolbar"><div className="search"><Search size={17} /><input placeholder="Rechercher un item" value={search} onChange={(e) => setSearch(e.target.value)} /></div><span>Poids exprimés en kilogrammes par unité</span></section>
+    <section className="table-panel weights-table"><table><thead><tr><th>Item</th><th>Poids unitaire</th><th>Statut</th>{role === "admin" && <th className="number">Action</th>}</tr></thead><tbody>{shown.map((item) => <WeightRow key={item} item={item} weight={weightByItem.get(item) ?? null} editable={role === "admin"} reload={reload} />)}</tbody></table><TableEmpty visible={!shown.length} /></section>
+  </>;
+}
+
+function WeightRow({ item, weight, editable, reload }: { item: string; weight: ItemWeight | null; editable: boolean; reload: () => Promise<void> }) {
+  const [value, setValue] = useState(weight?.weight_kg?.toString() ?? "");
+  const [state, setState] = useState<"idle" | "saving" | "error">("idle");
+  useEffect(() => setValue(weight?.weight_kg?.toString() ?? ""), [weight?.weight_kg]);
+  const save = async () => {
+    const parsed = value.trim() === "" ? null : Number(value);
+    if (parsed != null && (!Number.isFinite(parsed) || parsed <= 0)) { setState("error"); return; }
+    setState("saving");
+    const { error } = await supabase.from("item_weights").upsert({ item_name: item, weight_kg: parsed, updated_at: new Date().toISOString() });
+    setState(error ? "error" : "idle");
+    if (!error) await reload();
+  };
+  return <tr><td><strong>{item}</strong></td><td>{editable ? <div className="weight-input"><input aria-label={`Poids de ${item}`} type="number" min="0.001" step="0.001" placeholder="À renseigner" value={value} onChange={(event) => { setValue(event.target.value); setState("idle"); }} /><span>kg</span></div> : weight?.weight_kg == null ? "—" : formatWeight(Number(weight.weight_kg))}</td><td><span className={`weight-status ${weight?.weight_kg == null ? "pending" : "known"}`}>{weight?.weight_kg == null ? "À renseigner" : "Connu"}</span>{state === "error" && <small className="field-error">Poids invalide</small>}</td>{editable && <td className="number"><button className="icon-button save-weight" title={`Enregistrer le poids de ${item}`} onClick={save} disabled={state === "saving"}><Save size={17} /></button></td>}</tr>;
 }
 
 function HistoryView({ transactions, chests }: { transactions: Transaction[]; chests: Chest[] }) {
