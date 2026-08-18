@@ -2,7 +2,7 @@
 
 Dashboard statique pour centraliser les dépôts et retraits envoyés par des webhooks Discord. GitHub Pages sert le frontend Vite; Supabase fournit PostgreSQL, Auth, l’Edge Function de synchronisation et le Cron. Aucun bot Gateway ni serveur permanent n’est nécessaire.
 
-La vue par coffre affiche sa capacité maximale, le poids connu, l’espace restant et le poids de chaque ligne d’inventaire. Le catalogue **Poids des items** permet aux administrateurs de renseigner manuellement le poids en kilogrammes par unité; les items inconnus restent explicitement en attente et les totaux concernés sont marqués comme partiels. `Argent` et `Argent Sale` sont affichés comme des montants monétaires séparés et ne comptent jamais comme des items ou du poids.
+La vue par coffre affiche sa capacité maximale, le poids connu, l’espace restant et le poids de chaque ligne d’inventaire. Le catalogue **Poids des items** permet aux administrateurs de renseigner manuellement le poids en kilogrammes par unité; les items inconnus restent explicitement en attente et les totaux concernés sont marqués comme partiels. `Argent` et `Argent Sale` sont affichés comme des montants monétaires séparés et ne comptent jamais comme des items ou du poids. Le bouton **Vider le coffre** remet tous ses compteurs à zéro avec des ajustements manuels traçables, sans supprimer l’historique.
 
 ## Architecture
 

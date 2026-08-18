@@ -55,4 +55,19 @@ begin
   end if;
 end $$;
 
+select public.empty_chest('200', 'Coffre déclaré vide pendant le test');
+
+do $$
+begin
+  if exists (select 1 from public.inventory_by_chest where webhook_id = '200') then
+    raise exception 'Empty chest did not reset every balance to zero';
+  end if;
+  if not exists (
+    select 1 from public.transactions
+    where source = 'manual' and justification = 'Coffre déclaré vide pendant le test'
+  ) then
+    raise exception 'Empty chest adjustment audit record is missing';
+  end if;
+end $$;
+
 rollback;

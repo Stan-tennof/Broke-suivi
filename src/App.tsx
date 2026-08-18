@@ -1,7 +1,7 @@
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import type { Session } from "@supabase/supabase-js";
 import {
-  Archive, Banknote, Boxes, ChevronRight, CircleAlert, CircleHelp, History, LogOut,
+  Archive, ArchiveX, Banknote, Boxes, ChevronRight, CircleAlert, CircleHelp, History, LogOut,
   PackageSearch, RefreshCw, Save, Scale, Search, Settings, SlidersHorizontal,
   UserRound, Users,
 } from "lucide-react";
@@ -136,7 +136,7 @@ export default function App() {
       <header><div><span className="eyebrow">Suivi Discord</span><h1>{nav.find((item) => item.id === tab)?.label}</h1></div>{role === "admin" && <button className="primary" onClick={() => runSync()} disabled={loading}><RefreshCw size={17} className={loading ? "spin" : ""} /> Actualiser maintenant</button>}</header>
       {notice && <div className={`notice ${notice.kind}`}><CircleAlert size={18} />{notice.text}</div>}
       {tab === "global" && <GlobalView items={globalItems} lastRun={lastRun} />}
-      {tab === "chests" && <ChestView items={chestItems} weights={itemWeights} />}
+      {tab === "chests" && <ChestView items={chestItems} weights={itemWeights} chests={chests} transactions={transactions} role={role} reload={loadData} />}
       {tab === "weights" && <WeightsView transactions={transactions} weights={itemWeights} role={role} reload={loadData} />}
       {tab === "history" && <HistoryView transactions={transactions} chests={chests} />}
       {tab === "players" && <PlayersView players={players} transactions={transactions} />}
@@ -158,24 +158,39 @@ function GlobalView({ items, lastRun }: { items: InventoryItem[]; lastRun: SyncR
   </>;
 }
 
-function ChestView({ items, weights }: { items: ChestInventoryItem[]; weights: ItemWeight[] }) {
-  const groups = useMemo(() => {
-    const result = new Map<string, ChestInventoryItem[]>();
-    for (const item of items) {
-      const key = item.webhook_id ?? item.chest_name;
-      result.set(key, [...(result.get(key) ?? []), item]);
-    }
-    return result;
-  }, [items]);
+function ChestView({ items, weights, chests, transactions, role, reload }: { items: ChestInventoryItem[]; weights: ItemWeight[]; chests: Chest[]; transactions: Transaction[]; role: AppRole | null; reload: () => Promise<void> }) {
+  const [confirming, setConfirming] = useState<string | null>(null);
+  const [emptying, setEmptying] = useState<string | null>(null);
+  const [message, setMessage] = useState<Notice>(null);
   const weightByItem = useMemo(() => new Map(weights.map((weight) => [weight.item_name, weight.weight_kg])), [weights]);
-  return <div className="chest-grid">{[...groups.entries()].map(([id, rows]) => {
+  const activeChests = chests.filter((chest) => chest.active);
+  const emptyChest = async (chest: Chest) => {
+    setEmptying(chest.webhook_id);
+    setMessage(null);
+    const { data, error } = await supabase.rpc("empty_chest", {
+      p_webhook_id: chest.webhook_id,
+      p_justification: "Coffre déclaré vide depuis le dashboard",
+    });
+    if (error) {
+      setMessage({ kind: "error", text: error.message });
+    } else {
+      const count = Number(data);
+      setMessage({ kind: "success", text: `${chest.canonical_name} a été remis à zéro (${count} ajustement${count === 1 ? "" : "s"}).` });
+      await reload();
+    }
+    setConfirming(null);
+    setEmptying(null);
+  };
+  return <>{message && <div className={`notice ${message.kind}`}><CircleAlert size={18} />{message.text}</div>}<div className="chest-grid">{activeChests.map((chest) => {
+    const id = chest.webhook_id;
+    const rows = items.filter((item) => item.webhook_id === id);
     const physicalRows = rows.filter((row) => !isMoneyItem(row.item_name));
     const moneyRows = rows.filter((row) => isMoneyItem(row.item_name));
-    const capacity = rows[0].capacity_kg == null ? null : Number(rows[0].capacity_kg);
+    const capacity = chest.capacity_kg == null ? null : Number(chest.capacity_kg);
     const summary = calculateChestWeight(physicalRows, weights, capacity);
-    const lastMovement = rows.map((row) => row.last_movement_at).sort().at(-1);
+    const lastMovement = transactions.find((row) => row.discord_webhook_id === id)?.discord_timestamp;
     return <article className="chest-panel" key={id}>
-      <header><div><h2>{rows[0].chest_name}</h2><span>Webhook {id} · dernier mouvement {dateTime(lastMovement)}</span></div></header>
+      <header><div><h2>{chest.canonical_name}</h2><span>Webhook {id} · dernier mouvement {dateTime(lastMovement)}</span></div>{role === "admin" && <div className="chest-actions">{confirming === id ? <div className="empty-confirm"><span>Confirmer la remise à zéro?</span><button className="danger-button" onClick={() => void emptyChest(chest)} disabled={emptying === id}>Confirmer</button><button className="secondary compact" onClick={() => setConfirming(null)} disabled={emptying === id}>Annuler</button></div> : <button className="secondary empty-button" onClick={() => setConfirming(id)}><ArchiveX size={16} /> Vider le coffre</button>}</div>}</header>
       <div className="weight-metrics">
         <div><span>Capacité max.</span><strong>{capacity == null ? "Non définie" : formatWeight(capacity)}</strong></div>
         <div><span>Poids connu</span><strong>{formatWeight(summary.knownWeightKg)}</strong></div>
@@ -183,7 +198,7 @@ function ChestView({ items, weights }: { items: ChestInventoryItem[]; weights: I
       </div>
       {!summary.isComplete && <div className="weight-warning"><CircleHelp size={16} /><span>{summary.unknownItemCount} poids à renseigner ({summary.unknownUnitCount} unités). Le poids total est partiel.</span></div>}
       {moneyRows.length > 0 && <div className="money-section"><div className="money-title"><Banknote size={17} /><span>Argent</span></div>{moneyRows.map((row) => <div className="money-line" key={row.item_name}><span>{row.item_name}</span><strong className={Number(row.quantity) < 0 ? "negative" : ""}>{formatMoney(Number(row.quantity))}</strong></div>)}</div>}
-      <div className="stock-list weighted">{physicalRows.map((row) => {
+      <div className="stock-list weighted">{physicalRows.length === 0 && <div className="empty-stock"><ArchiveX size={20} /><span>Coffre vide</span></div>}{physicalRows.map((row) => {
         const unitWeight = weightByItem.get(row.item_name);
         const lineWeight = unitWeight == null ? null : Math.max(0, Number(row.quantity)) * Number(unitWeight);
         return <div className="stock-line" key={row.item_name}>
@@ -192,7 +207,7 @@ function ChestView({ items, weights }: { items: ChestInventoryItem[]; weights: I
         </div>;
       })}</div>
     </article>;
-  })}<TableEmpty visible={!items.length} /></div>;
+  })}<TableEmpty visible={!activeChests.length} /></div></>;
 }
 
 function WeightsView({ transactions, weights, role, reload }: { transactions: Transaction[]; weights: ItemWeight[]; role: AppRole | null; reload: () => Promise<void> }) {
