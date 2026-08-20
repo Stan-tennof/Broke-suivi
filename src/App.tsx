@@ -2,7 +2,7 @@ import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import type { Session } from "@supabase/supabase-js";
 import {
   Archive, ArchiveX, Banknote, Boxes, ChevronRight, CircleAlert, CircleHelp, History, LogOut,
-  PackageSearch, Pencil, RefreshCw, Save, Scale, Search, Settings, SlidersHorizontal,
+  PackageSearch, RefreshCw, Save, Scale, Search, Settings, SlidersHorizontal,
   UserRound, Users,
 } from "lucide-react";
 import { actionLabel, adjustmentToTarget, calculateChestWeight, formatMoney, formatWeight, isMoneyItem, validateAdjustment } from "./lib/domain";
@@ -161,8 +161,6 @@ function GlobalView({ items, lastRun }: { items: InventoryItem[]; lastRun: SyncR
 function ChestView({ items, weights, chests, transactions, role, reload }: { items: ChestInventoryItem[]; weights: ItemWeight[]; chests: Chest[]; transactions: Transaction[]; role: AppRole | null; reload: () => Promise<void> }) {
   const [confirming, setConfirming] = useState<string | null>(null);
   const [emptying, setEmptying] = useState<string | null>(null);
-  const [correction, setCorrection] = useState<{ key: string; webhookId: string; itemName: string; current: number; target: string } | null>(null);
-  const [correcting, setCorrecting] = useState(false);
   const [message, setMessage] = useState<Notice>(null);
   const weightByItem = useMemo(() => new Map(weights.map((weight) => [weight.item_name, weight.weight_kg])), [weights]);
   const activeChests = chests.filter((chest) => chest.active);
@@ -182,35 +180,6 @@ function ChestView({ items, weights, chests, transactions, role, reload }: { ite
     }
     setConfirming(null);
     setEmptying(null);
-  };
-  const applyCorrection = async () => {
-    if (!correction) return;
-    const target = Number(correction.target);
-    const delta = adjustmentToTarget(correction.current, target);
-    if (delta == null) {
-      setMessage({ kind: "error", text: "La quantité réelle doit être un nombre entier positif ou zéro." });
-      return;
-    }
-    if (delta === 0) {
-      setCorrection(null);
-      return;
-    }
-    setCorrecting(true);
-    setMessage(null);
-    const { error } = await supabase.rpc("create_manual_adjustment", {
-      p_webhook_id: correction.webhookId,
-      p_item_name: correction.itemName,
-      p_delta: delta,
-      p_justification: `Correction inventaire physique: ${correction.current} vers ${target}`,
-    });
-    if (error) {
-      setMessage({ kind: "error", text: error.message });
-    } else {
-      setMessage({ kind: "success", text: `${correction.itemName} corrigé à ${target}. L’ajustement de ${delta > 0 ? "+" : ""}${delta} est enregistré dans l’historique.` });
-      setCorrection(null);
-      await reload();
-    }
-    setCorrecting(false);
   };
   return <>{message && <div className={`notice ${message.kind}`}><CircleAlert size={18} />{message.text}</div>}<div className="chest-grid">{activeChests.map((chest) => {
     const id = chest.webhook_id;
@@ -233,20 +202,49 @@ function ChestView({ items, weights, chests, transactions, role, reload }: { ite
       <div className="stock-list weighted">{physicalRows.length === 0 && <div className="empty-stock"><ArchiveX size={20} /><span>Coffre vide</span></div>}{physicalRows.map((row) => {
         const unitWeight = weightByItem.get(row.item_name);
         const lineWeight = unitWeight == null ? null : Math.max(0, Number(row.quantity)) * Number(unitWeight);
-        const key = `${id}:${row.item_name}`;
         const latest = transactions.find((transaction) => transaction.discord_webhook_id === id && transaction.item_name === row.item_name);
-        const isEditing = correction?.key === key;
-        return <div className={`stock-entry ${isEditing ? "editing" : ""}`} key={row.item_name}>
+        return <div className="stock-entry" key={row.item_name}>
           <div className="stock-line">
             <div className="stock-name"><strong>{row.item_name}</strong><span>{latest ? `Dernier: ${actionLabel(latest.action).toLocaleLowerCase("fr")} ${latest.signed_delta > 0 ? "+" : ""}${latest.signed_delta} · ${dateTime(latest.discord_timestamp)}` : "Aucun mouvement récent"}</span></div>
-            <div className="stock-value"><strong className={Number(row.quantity) < 0 ? "negative" : ""}>{row.quantity} unités</strong><span>{lineWeight == null ? "Poids inconnu" : `${lineWeight === 0 ? "0 kg" : formatWeight(lineWeight)} · ${formatWeight(Number(unitWeight))}/u`}</span></div>
-            {role === "admin" && <button className="icon-button correction-button" title={`Corriger la quantité de ${row.item_name}`} onClick={() => setCorrection(isEditing ? null : { key, webhookId: id, itemName: row.item_name, current: Number(row.quantity), target: String(row.quantity) })}><Pencil size={15} /></button>}
+            <div className="stock-value">{role === "admin" ? <InlineQuantityEditor webhookId={id} itemName={row.item_name} quantity={Number(row.quantity)} reload={reload} onNotice={setMessage} /> : <strong className={Number(row.quantity) < 0 ? "negative" : ""}>{row.quantity} unités</strong>}<span>{lineWeight == null ? "Poids inconnu" : `${lineWeight === 0 ? "0 kg" : formatWeight(lineWeight)} · ${formatWeight(Number(unitWeight))}/u`}</span></div>
           </div>
-          {correction && isEditing && <div className="stock-correction"><label>Quantité réelle<input type="number" min="0" step="1" value={correction.target} onChange={(event) => setCorrection({ ...correction, target: event.target.value })} /></label><button className="primary compact" onClick={() => void applyCorrection()} disabled={correcting}>Appliquer</button><button className="secondary compact" onClick={() => setCorrection(null)} disabled={correcting}>Annuler</button></div>}
         </div>;
       })}</div>
     </article>;
   })}<TableEmpty visible={!activeChests.length} /></div></>;
+}
+
+function InlineQuantityEditor({ webhookId, itemName, quantity, reload, onNotice }: { webhookId: string; itemName: string; quantity: number; reload: () => Promise<void>; onNotice: (notice: Notice) => void }) {
+  const [value, setValue] = useState(String(quantity));
+  const [saving, setSaving] = useState(false);
+  useEffect(() => setValue(String(quantity)), [quantity]);
+  const save = async () => {
+    if (saving) return;
+    const target = value.trim() === "" ? Number.NaN : Number(value);
+    const delta = adjustmentToTarget(quantity, target);
+    if (delta == null) {
+      setValue(String(quantity));
+      onNotice({ kind: "error", text: "La quantité doit être un nombre entier positif ou zéro." });
+      return;
+    }
+    if (delta === 0) return;
+    setSaving(true);
+    const { error } = await supabase.rpc("create_manual_adjustment", {
+      p_webhook_id: webhookId,
+      p_item_name: itemName,
+      p_delta: delta,
+      p_justification: `Correction inventaire physique: ${quantity} vers ${target}`,
+    });
+    if (error) {
+      setValue(String(quantity));
+      onNotice({ kind: "error", text: error.message });
+    } else {
+      onNotice({ kind: "success", text: `${itemName} corrigé à ${target}.` });
+      await reload();
+    }
+    setSaving(false);
+  };
+  return <div className={`inline-quantity ${value !== String(quantity) ? "changed" : ""}`}><input aria-label={`Quantité réelle de ${itemName}`} title="Modifier puis appuyer sur Entrée" type="number" min="0" step="1" value={value} disabled={saving} onChange={(event) => setValue(event.target.value)} onBlur={() => void save()} onKeyDown={(event) => { if (event.key === "Enter") event.currentTarget.blur(); }} /><b>unités</b>{saving && <RefreshCw size={14} className="spin" />}</div>;
 }
 
 function WeightsView({ transactions, weights, role, reload }: { transactions: Transaction[]; weights: ItemWeight[]; role: AppRole | null; reload: () => Promise<void> }) {
