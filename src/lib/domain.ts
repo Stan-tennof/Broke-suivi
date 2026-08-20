@@ -54,6 +54,11 @@ export function validateAdjustment(delta: number, justification: string): string
   return null;
 }
 
+export function adjustmentToTarget(currentQuantity: number, targetQuantity: number): number | null {
+  if (!Number.isInteger(currentQuantity) || !Number.isInteger(targetQuantity) || targetQuantity < 0) return null;
+  return targetQuantity - currentQuantity;
+}
+
 export function calculateChestWeight(
   lines: WeightedStockLine[],
   weights: ItemWeightValue[],

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { calculateChestWeight, chestStock, formatMoney, formatWeight, globalStock, isMoneyItem, validateAdjustment } from "./domain";
+import { adjustmentToTarget, calculateChestWeight, chestStock, formatMoney, formatWeight, globalStock, isMoneyItem, validateAdjustment } from "./domain";
 
 const movements = [
   { item_name: "Fer", signed_delta: 10, discord_webhook_id: "1" },
@@ -23,6 +23,18 @@ describe("manual adjustments", () => {
     expect(validateAdjustment(0, "Stock initial")).not.toBeNull();
     expect(validateAdjustment(5, "")).not.toBeNull();
     expect(validateAdjustment(-5, "Correction inventaire")).toBeNull();
+  });
+});
+
+describe("physical inventory correction", () => {
+  it("calculates the adjustment needed to reach the real quantity", () => {
+    expect(adjustmentToTarget(2, 0)).toBe(-2);
+    expect(adjustmentToTarget(35, 37)).toBe(2);
+  });
+
+  it("rejects invalid real quantities", () => {
+    expect(adjustmentToTarget(2, -1)).toBeNull();
+    expect(adjustmentToTarget(2, 1.5)).toBeNull();
   });
 });
 

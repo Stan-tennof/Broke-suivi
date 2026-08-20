@@ -2,10 +2,10 @@ import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import type { Session } from "@supabase/supabase-js";
 import {
   Archive, ArchiveX, Banknote, Boxes, ChevronRight, CircleAlert, CircleHelp, History, LogOut,
-  PackageSearch, RefreshCw, Save, Scale, Search, Settings, SlidersHorizontal,
+  PackageSearch, Pencil, RefreshCw, Save, Scale, Search, Settings, SlidersHorizontal,
   UserRound, Users,
 } from "lucide-react";
-import { actionLabel, calculateChestWeight, formatMoney, formatWeight, isMoneyItem, validateAdjustment } from "./lib/domain";
+import { actionLabel, adjustmentToTarget, calculateChestWeight, formatMoney, formatWeight, isMoneyItem, validateAdjustment } from "./lib/domain";
 import { isConfigured, supabase } from "./lib/supabase";
 import type {
   AppRole, Channel, Chest, ChestInventoryItem, InventoryItem, ItemWeight,
@@ -161,6 +161,8 @@ function GlobalView({ items, lastRun }: { items: InventoryItem[]; lastRun: SyncR
 function ChestView({ items, weights, chests, transactions, role, reload }: { items: ChestInventoryItem[]; weights: ItemWeight[]; chests: Chest[]; transactions: Transaction[]; role: AppRole | null; reload: () => Promise<void> }) {
   const [confirming, setConfirming] = useState<string | null>(null);
   const [emptying, setEmptying] = useState<string | null>(null);
+  const [correction, setCorrection] = useState<{ key: string; webhookId: string; itemName: string; current: number; target: string } | null>(null);
+  const [correcting, setCorrecting] = useState(false);
   const [message, setMessage] = useState<Notice>(null);
   const weightByItem = useMemo(() => new Map(weights.map((weight) => [weight.item_name, weight.weight_kg])), [weights]);
   const activeChests = chests.filter((chest) => chest.active);
@@ -181,6 +183,35 @@ function ChestView({ items, weights, chests, transactions, role, reload }: { ite
     setConfirming(null);
     setEmptying(null);
   };
+  const applyCorrection = async () => {
+    if (!correction) return;
+    const target = Number(correction.target);
+    const delta = adjustmentToTarget(correction.current, target);
+    if (delta == null) {
+      setMessage({ kind: "error", text: "La quantité réelle doit être un nombre entier positif ou zéro." });
+      return;
+    }
+    if (delta === 0) {
+      setCorrection(null);
+      return;
+    }
+    setCorrecting(true);
+    setMessage(null);
+    const { error } = await supabase.rpc("create_manual_adjustment", {
+      p_webhook_id: correction.webhookId,
+      p_item_name: correction.itemName,
+      p_delta: delta,
+      p_justification: `Correction inventaire physique: ${correction.current} vers ${target}`,
+    });
+    if (error) {
+      setMessage({ kind: "error", text: error.message });
+    } else {
+      setMessage({ kind: "success", text: `${correction.itemName} corrigé à ${target}. L’ajustement de ${delta > 0 ? "+" : ""}${delta} est enregistré dans l’historique.` });
+      setCorrection(null);
+      await reload();
+    }
+    setCorrecting(false);
+  };
   return <>{message && <div className={`notice ${message.kind}`}><CircleAlert size={18} />{message.text}</div>}<div className="chest-grid">{activeChests.map((chest) => {
     const id = chest.webhook_id;
     const rows = items.filter((item) => item.webhook_id === id);
@@ -190,20 +221,28 @@ function ChestView({ items, weights, chests, transactions, role, reload }: { ite
     const summary = calculateChestWeight(physicalRows, weights, capacity);
     const lastMovement = transactions.find((row) => row.discord_webhook_id === id)?.discord_timestamp;
     return <article className="chest-panel" key={id}>
-      <header><div><h2>{chest.canonical_name}</h2><span>Webhook {id} · dernier mouvement {dateTime(lastMovement)}</span></div>{role === "admin" && <div className="chest-actions">{confirming === id ? <div className="empty-confirm"><span>Confirmer la remise à zéro?</span><button className="danger-button" onClick={() => void emptyChest(chest)} disabled={emptying === id}>Confirmer</button><button className="secondary compact" onClick={() => setConfirming(null)} disabled={emptying === id}>Annuler</button></div> : <button className="secondary empty-button" onClick={() => setConfirming(id)}><ArchiveX size={16} /> Vider le coffre</button>}</div>}</header>
+      <header><div><h2>{chest.canonical_name}</h2><span>Stock calculé depuis Discord · mis à jour {dateTime(lastMovement)}</span></div>{role === "admin" && <div className="chest-actions">{confirming === id ? <div className="empty-confirm"><span>Confirmer la remise à zéro?</span><button className="danger-button" onClick={() => void emptyChest(chest)} disabled={emptying === id}>Confirmer</button><button className="secondary compact" onClick={() => setConfirming(null)} disabled={emptying === id}>Annuler</button></div> : <button className="secondary empty-button" onClick={() => setConfirming(id)}><ArchiveX size={16} /> Vider le coffre</button>}</div>}</header>
       <div className="weight-metrics">
         <div><span>Capacité max.</span><strong>{capacity == null ? "Non définie" : formatWeight(capacity)}</strong></div>
-        <div><span>Poids connu</span><strong>{formatWeight(summary.knownWeightKg)}</strong></div>
-        <div><span>{summary.isComplete ? "Disponible" : "Disponible au plus"}</span><strong className={summary.remainingKg != null && summary.remainingKg < 0 ? "negative" : ""}>{summary.remainingKg == null ? "Indéterminé" : formatWeight(summary.remainingKg)}</strong></div>
+        <div><span>Poids calculé</span><strong>{formatWeight(summary.knownWeightKg)}</strong></div>
+        <div><span>{summary.isComplete ? "Espace restant" : "Maximum disponible"}</span><strong className={summary.remainingKg != null && summary.remainingKg < 0 ? "negative" : ""}>{summary.remainingKg == null ? "Indéterminé" : formatWeight(summary.remainingKg)}</strong></div>
       </div>
       {!summary.isComplete && <div className="weight-warning"><CircleHelp size={16} /><span>{summary.unknownItemCount} poids à renseigner ({summary.unknownUnitCount} unités). Le poids total est partiel.</span></div>}
       {moneyRows.length > 0 && <div className="money-section"><div className="money-title"><Banknote size={17} /><span>Argent</span></div>{moneyRows.map((row) => <div className="money-line" key={row.item_name}><span>{row.item_name}</span><strong className={Number(row.quantity) < 0 ? "negative" : ""}>{formatMoney(Number(row.quantity))}</strong></div>)}</div>}
+      <div className="stock-heading"><span>Contenu calculé</span><strong>{physicalRows.length} item{physicalRows.length === 1 ? "" : "s"}</strong></div>
       <div className="stock-list weighted">{physicalRows.length === 0 && <div className="empty-stock"><ArchiveX size={20} /><span>Coffre vide</span></div>}{physicalRows.map((row) => {
         const unitWeight = weightByItem.get(row.item_name);
         const lineWeight = unitWeight == null ? null : Math.max(0, Number(row.quantity)) * Number(unitWeight);
-        return <div className="stock-line" key={row.item_name}>
-          <div><strong>{row.item_name}</strong><span>{unitWeight == null ? "Poids à renseigner" : `${formatWeight(Number(unitWeight))} / unité`}</span></div>
-          <div><strong className={Number(row.quantity) < 0 ? "negative" : ""}>{row.quantity} unités</strong><span>{lineWeight == null ? "Poids inconnu" : formatWeight(lineWeight)}</span></div>
+        const key = `${id}:${row.item_name}`;
+        const latest = transactions.find((transaction) => transaction.discord_webhook_id === id && transaction.item_name === row.item_name);
+        const isEditing = correction?.key === key;
+        return <div className={`stock-entry ${isEditing ? "editing" : ""}`} key={row.item_name}>
+          <div className="stock-line">
+            <div className="stock-name"><strong>{row.item_name}</strong><span>{latest ? `Dernier: ${actionLabel(latest.action).toLocaleLowerCase("fr")} ${latest.signed_delta > 0 ? "+" : ""}${latest.signed_delta} · ${dateTime(latest.discord_timestamp)}` : "Aucun mouvement récent"}</span></div>
+            <div className="stock-value"><strong className={Number(row.quantity) < 0 ? "negative" : ""}>{row.quantity} unités</strong><span>{lineWeight == null ? "Poids inconnu" : `${lineWeight === 0 ? "0 kg" : formatWeight(lineWeight)} · ${formatWeight(Number(unitWeight))}/u`}</span></div>
+            {role === "admin" && <button className="icon-button correction-button" title={`Corriger la quantité de ${row.item_name}`} onClick={() => setCorrection(isEditing ? null : { key, webhookId: id, itemName: row.item_name, current: Number(row.quantity), target: String(row.quantity) })}><Pencil size={15} /></button>}
+          </div>
+          {correction && isEditing && <div className="stock-correction"><label>Quantité réelle<input type="number" min="0" step="1" value={correction.target} onChange={(event) => setCorrection({ ...correction, target: event.target.value })} /></label><button className="primary compact" onClick={() => void applyCorrection()} disabled={correcting}>Appliquer</button><button className="secondary compact" onClick={() => setCorrection(null)} disabled={correcting}>Annuler</button></div>}
         </div>;
       })}</div>
     </article>;
