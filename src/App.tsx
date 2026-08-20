@@ -135,7 +135,7 @@ export default function App() {
     <main className="content">
       <header><div><span className="eyebrow">Suivi Discord</span><h1>{nav.find((item) => item.id === tab)?.label}</h1></div>{role === "admin" && <button className="primary" onClick={() => runSync()} disabled={loading}><RefreshCw size={17} className={loading ? "spin" : ""} /> Actualiser maintenant</button>}</header>
       {notice && <div className={`notice ${notice.kind}`}><CircleAlert size={18} />{notice.text}</div>}
-      {tab === "global" && <GlobalView items={globalItems} lastRun={lastRun} />}
+      {tab === "global" && <GlobalView items={globalItems} chestItems={chestItems} lastRun={lastRun} />}
       {tab === "chests" && <ChestView items={chestItems} weights={itemWeights} chests={chests} transactions={transactions} role={role} reload={loadData} />}
       {tab === "weights" && <WeightsView transactions={transactions} weights={itemWeights} role={role} reload={loadData} />}
       {tab === "history" && <HistoryView transactions={transactions} chests={chests} />}
@@ -145,8 +145,9 @@ export default function App() {
   </div>;
 }
 
-function GlobalView({ items, lastRun }: { items: InventoryItem[]; lastRun: SyncRun | null }) {
+function GlobalView({ items, chestItems, lastRun }: { items: InventoryItem[]; chestItems: ChestInventoryItem[]; lastRun: SyncRun | null }) {
   const [search, setSearch] = useState("");
+  const [selectedItem, setSelectedItem] = useState<string | null>(null);
   const physicalItems = items.filter((item) => !isMoneyItem(item.item_name));
   const shown = physicalItems.filter((item) => item.item_name.toLocaleLowerCase("fr").includes(search.toLocaleLowerCase("fr")));
   const cleanMoney = items.filter((item) => item.item_name.trim().toLocaleLowerCase("fr") === "argent").reduce((sum, item) => sum + Number(item.quantity), 0);
@@ -154,7 +155,11 @@ function GlobalView({ items, lastRun }: { items: InventoryItem[]; lastRun: SyncR
   return <>
     <section className="metrics"><Metric label="Items suivis" value={physicalItems.length} /><Metric label="Unités en stock" value={physicalItems.reduce((sum, item) => sum + Number(item.quantity), 0)} /><Metric label="Argent" value={formatMoney(cleanMoney)} tone="money-clean" /><Metric label="Argent sale" value={formatMoney(dirtyMoney)} tone="money-dirty" /></section>
     <section className="toolbar"><div className="search"><Search size={17} /><input placeholder="Rechercher un item" value={search} onChange={(e) => setSearch(e.target.value)} /></div><span>Dernière synchro : {dateTime(lastRun?.completed_at)}</span></section>
-    <section className="table-panel"><TableEmpty visible={!shown.length} /><table><thead><tr><th>Item</th><th className="number">Quantité actuelle</th></tr></thead><tbody>{shown.map((item) => <tr key={item.item_name}><td><strong>{item.item_name}</strong></td><td className="number stock">{item.quantity}</td></tr>)}</tbody></table></section>
+    <section className="table-panel"><TableEmpty visible={!shown.length} /><table><thead><tr><th>Item</th><th className="number">Quantité actuelle</th></tr></thead>{shown.map((item) => {
+      const isOpen = selectedItem === item.item_name;
+      const locations = chestItems.filter((row) => row.item_name === item.item_name && Number(row.quantity) !== 0).sort((a, b) => Number(b.quantity) - Number(a.quantity));
+      return <tbody key={item.item_name} className={isOpen ? "inventory-group open" : "inventory-group"}><tr><td><button className="item-expand" aria-expanded={isOpen} onClick={() => setSelectedItem(isOpen ? null : item.item_name)}><ChevronRight size={16} /><strong>{item.item_name}</strong></button></td><td className="number stock">{item.quantity}</td></tr>{isOpen && <tr className="inventory-location-row"><td colSpan={2}><div className="inventory-locations">{locations.length > 0 ? locations.map((location) => <div key={location.webhook_id ?? location.chest_name}><span><Archive size={15} />{location.chest_name}</span><strong>{location.quantity} unité{Number(location.quantity) === 1 ? "" : "s"}</strong></div>) : <span className="no-location">Aucun coffre associé.</span>}</div></td></tr>}</tbody>;
+    })}</table></section>
   </>;
 }
 
